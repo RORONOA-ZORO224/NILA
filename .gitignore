@@ -1,2 +1,20 @@
+# ENV files
 .env
+.env.*
+backend/.env
+
+
+# Credentials
+credentials.json
 backend/credentials.json
+
+# Python
+venv/
+__pycache__/
+
+# Node
+node_modules/
+
+# Build
+build/
+dist/

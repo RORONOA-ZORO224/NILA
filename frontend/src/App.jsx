@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
-import ChatBubbles from "./components/ChatBubbles";
+import ChatBubbles from "./components/chatBubbles";
 import VoiceButton from "./components/VoiceButton";
 import ActionCard from "./components/ActionCard";
 import Dashboard from "./components/Dashboard";

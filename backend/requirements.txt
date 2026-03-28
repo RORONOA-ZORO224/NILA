@@ -1,0 +1,24 @@
+# ARIA Backend — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+
+# AI / LLM
+groq==0.11.0
+
+# Google APIs (Gmail + Calendar)
+google-api-python-client==2.149.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.1
+
+# Slack
+slack-sdk==3.33.0
+
+# Notion
+notion-client==2.2.1
+
+# Utilities
+python-dotenv==1.0.1
+pydantic==2.9.2
