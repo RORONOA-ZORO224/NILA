@@ -5,6 +5,11 @@ Persona memory and action history using SQLite.
 Two responsibilities:
   1. PersonaMemory  — learns user preferences from interactions
   2. ActionHistory  — append-only log of all executed actions (for dashboard)
+
+Fixes applied:
+  - WAL journal mode prevents "database is locked" under concurrent requests
+  - PersonaMemory.delete() actually removes the row instead of storing null
+  - get_all() filters out null/None values left by old code
 """
 
 import json
@@ -18,33 +23,38 @@ from groq import Groq
 
 DB_PATH = Path(__file__).parent / "aria_memory.db"
 
+
 # ── Schema setup ──────────────────────────────────────────────────────────────
 
 def _get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # WAL mode: multiple readers + one writer simultaneously without locking
+    conn.execute("PRAGMA journal_mode=WAL;")
     return conn
+
 
 def init_db() -> None:
     with _get_conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS persona (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS action_log (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                action     TEXT NOT NULL,
-                mode       TEXT NOT NULL,
-                summary    TEXT NOT NULL,
-                status     TEXT NOT NULL DEFAULT 'executed',
-                reasoning  TEXT,
-                payload    TEXT,
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                action      TEXT NOT NULL,
+                mode        TEXT NOT NULL,
+                summary     TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'executed',
+                reasoning   TEXT,
+                payload     TEXT,
                 executed_at TEXT NOT NULL
             );
         """)
+
 
 # ── PersonaMemory ─────────────────────────────────────────────────────────────
 
@@ -62,21 +72,34 @@ class PersonaMemory:
     def get_all(self) -> dict[str, Any]:
         with _get_conn() as conn:
             rows = conn.execute("SELECT key, value FROM persona").fetchall()
-        return {row["key"]: json.loads(row["value"]) for row in rows}
+        result = {}
+        for row in rows:
+            try:
+                val = json.loads(row["value"])
+                if val is not None:  # Filter out nulls left by old buggy code
+                    result[row["key"]] = val
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return result
 
     def set(self, key: str, value: Any) -> None:
         with _get_conn() as conn:
             conn.execute(
                 """INSERT INTO persona (key, value, updated_at)
                    VALUES (?, ?, ?)
-                   ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+                   ON CONFLICT(key) DO UPDATE
+                   SET value=excluded.value, updated_at=excluded.updated_at""",
                 (key, json.dumps(value), datetime.utcnow().isoformat()),
             )
+
+    def delete(self, key: str) -> None:
+        """Actually remove the row — unlike set(key, None) which stores a null string."""
+        with _get_conn() as conn:
+            conn.execute("DELETE FROM persona WHERE key = ?", (key,))
 
     def extract_and_store(self, user_command: str, action_taken: str) -> None:
         """
         Run a Groq call to detect preference signals in the command.
-        E.g. 'Order lunch from Anjappar for 12' → { lunch_restaurant: 'Anjappar', team_size: 12 }
         Fire-and-forget — never blocks the main response.
         """
         prompt = f"""Extract any personal preference signals from this command and the action taken.

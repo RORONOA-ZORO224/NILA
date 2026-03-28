@@ -2,13 +2,17 @@
 tool_router.py
 ──────────────
 Routes classified intents to the appropriate tool.
-Registers undo handlers ONCE per action, keyed by the real action_id from history.log().
+
+Fixes applied:
+  - Chain steps use _execute_step_only() which skips history.log() and undo
+    registration, preventing every chain step from being double-logged.
+  - The parent chain action is logged once at the end with a combined summary.
 """
 
 import asyncio
 from typing import Any
 
-from intent_classifier import IntentResult
+from intent_classifier import IntentResult, Entities
 from memory import ActionHistory, PersonaMemory
 from undo_shield import undo_shield
 from tools import calendar_tool, gmail_tool, linkedin_tool, notion_tool, slack_tool
@@ -22,32 +26,13 @@ class ToolRouter:
     async def execute(self, intent: IntentResult, raw_command: str) -> dict[str, Any]:
         """
         Route the classified intent to the appropriate tool.
-        Undo is registered AFTER history.log() so we have the real action_id.
+        Logs to history ONCE and registers undo ONCE, both keyed by action_id.
         """
-        action = intent.action
-        prefs = self.persona.get_all()
+        result = await self._dispatch(intent, self.persona.get_all(), raw_command)
 
-        if action == "send_email":
-            result = await self._handle_send_email(intent, prefs)
-        elif action == "create_event":
-            result = await self._handle_create_event(intent, prefs)
-        elif action == "search_linkedin":
-            result = await self._handle_linkedin(intent, prefs)
-        elif action == "slack_message":
-            result = await self._handle_slack(intent, prefs)
-        elif action == "notion_create":
-            result = await self._handle_notion(intent, prefs)
-        elif action == "chain":
-            result = await self._handle_chain(intent, prefs, raw_command)
-        else:
-            result = {
-                "status": "unknown_action",
-                "message": f"Don't know how to handle action '{action}' yet.",
-            }
-
-        # Log to history — this gives us the real action_id
+        # Log to history — gives us the real action_id
         action_id = self.history.log(
-            action=action,
+            action=intent.action,
             mode=intent.mode,
             summary=result.get("summary", str(result)),
             reasoning=intent.reasoning,
@@ -56,14 +41,35 @@ class ToolRouter:
         result["action_id"] = action_id
 
         # Register undo ONCE using the real action_id
-        self._register_undo(action, action_id, result)
+        self._register_undo(intent.action, action_id, result)
 
         # Background preference extraction — non-blocking
         asyncio.create_task(
-            asyncio.to_thread(self.persona.extract_and_store, raw_command, action)
+            asyncio.to_thread(self.persona.extract_and_store, raw_command, intent.action)
         )
 
         return result
+
+    async def _dispatch(self, intent: IntentResult, prefs: dict, raw_command: str) -> dict[str, Any]:
+        """Route to the appropriate handler without touching history or undo."""
+        action = intent.action
+        if action == "send_email":
+            return await self._handle_send_email(intent, prefs)
+        elif action == "create_event":
+            return await self._handle_create_event(intent, prefs)
+        elif action == "search_linkedin":
+            return await self._handle_linkedin(intent, prefs)
+        elif action == "slack_message":
+            return await self._handle_slack(intent, prefs)
+        elif action == "notion_create":
+            return await self._handle_notion(intent, prefs)
+        elif action == "chain":
+            return await self._handle_chain(intent, prefs, raw_command)
+        else:
+            return {
+                "status": "unknown_action",
+                "message": f"Don't know how to handle action '{action}' yet.",
+            }
 
     def _register_undo(self, action: str, action_id: int, result: dict) -> None:
         """Register a single undo entry for reversible actions."""
@@ -181,11 +187,15 @@ class ToolRouter:
         return result
 
     async def _handle_chain(self, intent: IntentResult, prefs: dict, raw_command: str) -> dict:
-        """Execute a multi-step workflow sequentially."""
+        """
+        Execute a multi-step workflow sequentially.
+        
+        Each step calls _dispatch() directly — NOT execute() — so we avoid
+        double-logging. The parent execute() logs the whole chain once.
+        """
         results = []
         for step in intent.chain_steps:
             step_action = step.get("action", "other")
-            from intent_classifier import Entities
             step_intent = IntentResult(
                 action=step_action,
                 mode="ACT",
@@ -198,7 +208,8 @@ class ToolRouter:
                 chain_steps=[],
                 reasoning=f"Chain step from: {raw_command}",
             )
-            step_result = await self.execute(step_intent, raw_command)
+            # Use _dispatch, not execute — prevents double-logging
+            step_result = await self._dispatch(step_intent, prefs, raw_command)
             results.append({
                 "step": step_action,
                 "status": step_result.get("status"),

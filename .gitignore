@@ -1,7 +1,8 @@
 # ENV files
 .env
 .env.*
-backend/.env
+backend/.env.example
+frontend/.env.example
 
 
 # Credentials
