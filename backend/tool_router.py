@@ -1,11 +1,4 @@
-"""
-tool_router.py
-──────────────
-Maps classified action types to the correct tool function.
-Handles entity extraction, calls the tool, and returns a standardized result.
-This is the only module that imports all tools — keeps main.py clean.
-"""
-
+import asyncio
 from typing import Any
 
 from intent_classifier import IntentResult
@@ -57,6 +50,35 @@ class ToolRouter:
             reasoning=intent.reasoning,
             payload=result,
         )
+        # Register undo with the REAL action_id
+if action == "send_email" and result.get("status") == "sent":
+    msg_id = result["message_id"]
+    undo_shield.register(
+        action_id=action_id,
+        summary=f"Email to {result.get('to')}: '{result.get('subject')}'",
+        undo_fn=lambda: asyncio.to_thread(gmail_tool.recall_email, msg_id),
+    )
+elif action == "create_event" and result.get("status") == "created":
+    event_id = result["event_id"]
+    undo_shield.register(
+        action_id=action_id,
+        summary=f"Calendar event: '{result.get('title')}'",
+        undo_fn=lambda: asyncio.to_thread(calendar_tool.delete_event, event_id),
+    )
+elif action == "slack_message" and result.get("status") == "sent":
+    ch, ts = result["channel"], result["ts"]
+    undo_shield.register(
+        action_id=action_id,
+        summary=f"Slack message in {result.get('channel')}",
+        undo_fn=lambda: asyncio.to_thread(slack_tool.delete_message, ch, ts),
+    )
+elif action == "notion_create" and result.get("status") == "created":
+    page_id = result["page_id"]
+    undo_shield.register(
+        action_id=action_id,
+        summary=f"Notion page: '{result.get('title')}'",
+        undo_fn=lambda: asyncio.to_thread(notion_tool.archive_page, page_id),
+    )
         result["action_id"] = action_id
 
         # Background preference extraction — fire and don't await
@@ -210,5 +232,3 @@ class ToolRouter:
         }
 
 
-# Lazy import to avoid circular dep — asyncio.to_thread needs asyncio
-import asyncio
